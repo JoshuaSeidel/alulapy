@@ -288,6 +288,19 @@ class AlulaClient:
         rpc_result: dict[str, Any] = result.get("result", {})
         return rpc_result
 
+    async def async_request_raw(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict | None = None,
+    ) -> dict[str, Any]:
+        """Make an authenticated request and return the raw JSON response.
+
+        Useful for probing API endpoints and inspecting response structure.
+        """
+        return await self._request(method, path, params=params)
+
     # ── User ─────────────────────────────────────────────────────────
 
     async def async_get_user(self) -> User:
