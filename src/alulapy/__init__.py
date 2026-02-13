@@ -16,8 +16,8 @@ Usage:
 
 from .client import AlulaClient
 from .const import ArmingState
-from .exceptions import AlulaAuthError, AlulaApiError, AlulaConnectionError
-from .models import Device, Zone, ZoneStatus, EventLogEntry, User
+from .exceptions import AlulaApiError, AlulaAuthError, AlulaConnectionError
+from .models import Device, EventLogEntry, User, Zone, ZoneStatus
 
 __all__ = [
     "AlulaClient",
