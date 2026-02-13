@@ -329,8 +329,33 @@ class AlulaClient:
 
     # ── Zones ────────────────────────────────────────────────────────
 
+    async def async_get_device_zones(self, device_id: str) -> list[Zone]:
+        """Get all zones for a specific device.
+
+        Uses the device relationship endpoint which returns all zones
+        regardless of push notification settings.
+
+        Args:
+            device_id: The panel device UUID.
+
+        Returns:
+            List of Zone objects.
+        """
+        result = await self._request(
+            "GET", f"/api/v1/devices/{device_id}/zones",
+            params={"page[size]": str(DEFAULT_PAGE_SIZE)},
+        )
+        raw_data = result.get("data", [])
+        _LOGGER.debug(
+            "async_get_device_zones(%s): got %d zones", device_id, len(raw_data)
+        )
+        return [Zone.from_api(z, device_id=device_id) for z in raw_data]
+
     async def async_get_zones(self) -> list[Zone]:
-        """Get all zone notification states (door/window/motion sensors).
+        """Get zone notification states (only zones with push enabled).
+
+        NOTE: This endpoint only returns zones that have push notification
+        subscriptions.  Prefer async_get_device_zones() for a full list.
 
         Returns:
             List of Zone objects with current open/closed status.
@@ -422,6 +447,20 @@ class AlulaClient:
             AlulaApiError: If the command fails.
         """
         return await self._helix_command(device_id, "armAway")
+
+    async def async_arm_night(self, device_id: str) -> dict[str, Any]:
+        """Arm the panel in Night mode.
+
+        Args:
+            device_id: The panel device UUID.
+
+        Returns:
+            RPC result dict.
+
+        Raises:
+            AlulaApiError: If the command fails.
+        """
+        return await self._helix_command(device_id, "armNight")
 
     async def async_disarm(self, device_id: str) -> dict[str, Any]:
         """Disarm the panel.

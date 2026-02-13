@@ -182,28 +182,45 @@ class Zone:
         return self.status.is_active
 
     @classmethod
-    def from_api(cls, data: dict[str, Any]) -> Zone:
-        """Create from API response data."""
+    def from_api(cls, data: dict[str, Any], device_id: str | None = None) -> Zone:
+        """Create from API response data.
+
+        Handles both the device zones endpoint format (direct zoneName /
+        zoneType attributes) and the notification zones endpoint format
+        (names embedded in pushOptions).
+
+        Args:
+            data: Raw JSON:API resource dict.
+            device_id: Fallback device ID when the attribute is absent
+                       (e.g. when fetched via a device relationship URL).
+        """
         attrs = data.get("attributes", {})
-        push_opts = attrs.get("pushOptions", {})
-        push_data = push_opts.get("data", {})
-        body_args = push_opts.get("bodyArgs", [])
 
-        # Try to extract zone name from template args
-        zone_name = None
-        if body_args:
-            candidate = body_args[0]
-            if not candidate.startswith("{"):
-                zone_name = candidate
+        # ── Zone name ────────────────────────────────────────────────
+        # Prefer direct attribute, fall back to notification template.
+        zone_name: str | None = attrs.get("zoneName") or attrs.get("friendlyName")
+        if not zone_name:
+            push_opts = attrs.get("pushOptions", {})
+            body_args = push_opts.get("bodyArgs", [])
+            if body_args:
+                candidate = body_args[0]
+                if not candidate.startswith("{"):
+                    zone_name = candidate
 
-        # Device type hint from push data (may be a template string)
-        device_type_hint = push_data.get("deviceType")
+        # ── Device type hint ─────────────────────────────────────────
+        device_type_hint: str | None = (
+            attrs.get("zoneType") or attrs.get("deviceType")
+        )
+        if not device_type_hint:
+            push_opts = attrs.get("pushOptions", {})
+            push_data = push_opts.get("data", {})
+            device_type_hint = push_data.get("deviceType")
         if isinstance(device_type_hint, str) and device_type_hint.startswith("{"):
             device_type_hint = None
 
         return cls(
             id=data.get("id", ""),
-            device_id=attrs.get("deviceId", ""),
+            device_id=attrs.get("deviceId", "") or device_id or "",
             zone_index=attrs.get("zoneIndex", 0),
             status=ZoneStatus.from_api(attrs.get("zoneStatus", {})),
             push_enabled=attrs.get("pushEnabled", False),
