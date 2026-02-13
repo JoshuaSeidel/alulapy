@@ -244,9 +244,11 @@ class AlulaClient:
                         if retry.status == 401:
                             raise AlulaAuthError("Authentication failed after refresh")
                         retry.raise_for_status()
-                        return await retry.json()
+                        result: dict[str, Any] = await retry.json()
+                        return result
                 resp.raise_for_status()
-                return await resp.json()
+                result = await resp.json()
+                return result
         except AlulaAuthError:
             raise
         except aiohttp.ClientError as err:
@@ -283,7 +285,8 @@ class AlulaClient:
                 f"RPC error ({rpc_method}): {err}",
                 status_code=err.get("code"),
             )
-        return result.get("result", {})
+        rpc_result: dict[str, Any] = result.get("result", {})
+        return rpc_result
 
     # ── User ─────────────────────────────────────────────────────────
 
@@ -383,7 +386,8 @@ class AlulaClient:
             True if successful.
         """
         result = await self._rpc("events.notifications.renew", {"ttl": ttl})
-        return result.get("success", False)
+        success: bool = result.get("success", False)
+        return success
 
     # ── Arm / Disarm ─────────────────────────────────────────────────
     # Uses helix.command RPC. Requires interactiveEnabled=True on the
