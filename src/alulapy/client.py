@@ -288,19 +288,6 @@ class AlulaClient:
         rpc_result: dict[str, Any] = result.get("result", {})
         return rpc_result
 
-    async def async_request_raw(
-        self,
-        method: str,
-        path: str,
-        *,
-        params: dict | None = None,
-    ) -> dict[str, Any]:
-        """Make an authenticated request and return the raw JSON response.
-
-        Useful for probing API endpoints and inspecting response structure.
-        """
-        return await self._request(method, path, params=params)
-
     # ── User ─────────────────────────────────────────────────────────
 
     async def async_get_user(self) -> User:
@@ -342,36 +329,15 @@ class AlulaClient:
 
     # ── Zones ────────────────────────────────────────────────────────
 
-    async def async_get_device_zones(self, device_id: str) -> list[Zone]:
-        """Get all zones for a specific device.
-
-        Uses the device relationship endpoint which returns all zones
-        regardless of push notification settings.
-
-        Args:
-            device_id: The panel device UUID.
-
-        Returns:
-            List of Zone objects.
-        """
-        result = await self._request(
-            "GET", f"/api/v1/devices/{device_id}/zones",
-            params={"page[size]": str(DEFAULT_PAGE_SIZE)},
-        )
-        raw_data = result.get("data", [])
-        _LOGGER.debug(
-            "async_get_device_zones(%s): got %d zones", device_id, len(raw_data)
-        )
-        return [Zone.from_api(z, device_id=device_id) for z in raw_data]
-
     async def async_get_zones(self) -> list[Zone]:
-        """Get zone notification states (only zones with push enabled).
+        """Get zone notification subscriptions.
 
         NOTE: This endpoint only returns zones that have push notification
-        subscriptions.  Prefer async_get_device_zones() for a full list.
+        subscriptions.  Use async_discover_zones() + async_ensure_zone_subscriptions()
+        to discover and subscribe all zones first.
 
         Returns:
-            List of Zone objects with current open/closed status.
+            List of Zone objects for subscribed zones.
         """
         result = await self._request(
             "GET", "/api/v1/events/notifications/zones",
@@ -411,6 +377,127 @@ class AlulaClient:
             params=params,
         )
         return [EventLogEntry.from_api(e) for e in result.get("data", [])]
+
+    # ── Zone Discovery & Subscriptions ────────────────────────────────
+
+    async def async_discover_zones(
+        self, device_id: str
+    ) -> dict[int, dict[str, str | None]]:
+        """Discover zones by scanning the device event log.
+
+        The Alula API has no standalone zones endpoint. Zone information
+        (names, types) is only available in event log entries.
+
+        Args:
+            device_id: The panel device UUID.
+
+        Returns:
+            Dict mapping zone_index -> {"zone_name": str|None, "zone_type": str}.
+        """
+        result = await self._request(
+            "GET",
+            f"/api/v1/devices/{device_id}/eventlog",
+            params={
+                "customOptions[omitRelationships]": "true",
+                "page[size]": "500",
+                "sort": "-dateEntered",
+            },
+        )
+        zones: dict[int, dict[str, str | None]] = {}
+        for entry in result.get("data", []):
+            attrs = entry.get("attributes", {})
+            zone_str = attrs.get("signalUserZone", "")
+            if not zone_str or not zone_str.isdigit():
+                continue
+            zone_idx = int(zone_str)
+            if zone_idx == 0 or zone_idx in zones:
+                continue
+            zones[zone_idx] = {
+                "zone_name": attrs.get("signalUserZoneAlias"),
+                "zone_type": attrs.get("signalUserZoneType", ""),
+            }
+        _LOGGER.debug(
+            "Discovered %d zones from event log for device %s", len(zones), device_id
+        )
+        return zones
+
+    async def async_ensure_zone_subscriptions(
+        self, device_id: str, zone_indices: list[int]
+    ) -> int:
+        """Create notification subscriptions for zones that don't already have them.
+
+        Each zone needs two subscriptions: one for on=True (opened) and one
+        for on=False (closed). The payload requires BOTH the nested
+        ``zoneStatus`` object and the flat ``zoneStatusName``/``zoneStatusOn``
+        fields.
+
+        Args:
+            device_id: The panel device UUID.
+            zone_indices: List of zone index numbers to subscribe.
+
+        Returns:
+            Number of new subscriptions created.
+        """
+        existing = await self.async_get_zones()
+        existing_keys: set[tuple[str, int, bool]] = {
+            (z.device_id, z.zone_index, z.status.is_active) for z in existing
+        }
+
+        created = 0
+        for zone_idx in zone_indices:
+            for status_on in (True, False):
+                if (device_id, zone_idx, status_on) in existing_keys:
+                    continue
+                payload = {
+                    "data": {
+                        "type": "events-notifications-zones",
+                        "attributes": {
+                            "deviceId": device_id,
+                            "zoneIndex": zone_idx,
+                            "zoneStatus": {"name": "open", "on": status_on},
+                            "zoneStatusName": "open",
+                            "zoneStatusOn": status_on,
+                            "pushEnabled": True,
+                            "pushOptions": {
+                                "titleKey": "APP_NAME",
+                                "bodyKey": (
+                                    "OPEN_ACTIVE" if status_on else "OPEN_INACTIVE"
+                                ),
+                                "bodyArgs": [
+                                    f"{{zoneConfiguration.{zone_idx}.zoneName:}}"
+                                ],
+                                "data": {
+                                    "deviceId": device_id,
+                                    "zoneIndex": zone_idx,
+                                    "deviceType": (
+                                        f"{{zoneConfiguration.{zone_idx}.deviceType}}"
+                                    ),
+                                },
+                            },
+                        },
+                    }
+                }
+                try:
+                    await self._request(
+                        "POST",
+                        "/api/v1/events/notifications/zones",
+                        json_data=payload,
+                    )
+                    created += 1
+                    _LOGGER.debug(
+                        "Created zone subscription: zone %d (on=%s)",
+                        zone_idx,
+                        status_on,
+                    )
+                except Exception as err:  # noqa: BLE001
+                    # 403 = already exists (unique constraint), which is fine
+                    _LOGGER.debug(
+                        "Zone subscription skipped: zone %d (on=%s): %s",
+                        zone_idx,
+                        status_on,
+                        err,
+                    )
+        return created
 
     # ── Notifications ────────────────────────────────────────────────
 
